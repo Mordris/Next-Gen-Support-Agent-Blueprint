@@ -1,13 +1,15 @@
 # docker-compose.yml
 services:
   api:
-    build: . # Build the image from the Dockerfile in the current directory
+    build: .
     ports:
-      - "8000:8000" # Map host port 8000 to container port 8000
+      - "8000:8000"
     env_file:
-      - .env # Inject the .env file into the container
+      - .env
     volumes:
       - ./app:/code/app
+      - ./scripts:/code/scripts # <-- ADD THIS LINE
+      - ./data:/code/data # <-- ADD THIS LINE
     depends_on:
       - redis
       - chroma

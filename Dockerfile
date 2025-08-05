@@ -1,7 +1,7 @@
 # Dockerfile
 
 # 1. Use an official Python runtime as a parent image
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 # 2. Set the working directory to a neutral location
 WORKDIR /code

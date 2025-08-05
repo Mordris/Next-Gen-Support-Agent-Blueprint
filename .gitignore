@@ -1,4 +1,12 @@
+# .gitignore
+
+# Environment variables
 .env
-venv
+
+# Python
 __pycache__/
 *.pyc
+.venv/
+
+*.lock
+*_cache

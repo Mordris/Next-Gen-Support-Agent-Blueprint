@@ -1,7 +1,7 @@
 # app/core/retriever.py
 
-from langchain_community.vectorstores import Chroma
-from langchain_community.retrievers import FlashrankRerank
+from langchain_chroma import Chroma
+from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain_huggingface import HuggingFaceEmbeddings
 import chromadb

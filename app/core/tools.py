@@ -1,16 +1,11 @@
-# app/core/tools.py
-
 from langchain.tools import tool
 from pydantic import BaseModel, Field
-from typing import Dict, Any
+from typing import Dict, Any, List
+from langchain_core.documents import Document
 
-# Import the retriever function we already built
 from app.core.retriever import get_retriever
 
 
-# 1. Define the RAG Tool
-# We wrap our advanced retriever in a LangChain @tool decorator.
-# This makes it a component that an agent can select and use.
 @tool
 def retrieve_context(query: str) -> str:
     """
@@ -19,15 +14,25 @@ def retrieve_context(query: str) -> str:
     attention mechanisms, or machine translation.
     """
     retriever = get_retriever()
-    # The invoke method runs the retriever and returns the documents
-    relevant_docs = retriever.invoke(query)
-    # We format the documents into a single string to be passed to the LLM
-    return "\n\n".join(doc.page_content for doc in relevant_docs)
+    relevant_docs: List[Document] = retriever.invoke(query)
+
+    if not relevant_docs:
+        return "No relevant documents found."
+
+    # Return the full context for the agent to use
+    context = "\n\n---\n\n".join(
+        [
+            f"Document {i + 1}:\n{doc.page_content}"
+            for i, doc in enumerate(relevant_docs)
+        ]
+    )
+
+    # Add a summary at the beginning for better context
+    summary = f"Retrieved {len(relevant_docs)} relevant document(s) from the knowledge base.\n\n"
+
+    return summary + context
 
 
-# 2. Define the Order Status Tool
-# We define a Pydantic model for the arguments of this tool.
-# This provides structure and validation for the tool's inputs.
 class OrderStatusInput(BaseModel):
     order_id: str = Field(description="The unique identifier of the order.")
 
@@ -38,11 +43,30 @@ def get_order_status(order_id: str) -> Dict[str, Any]:
     Checks the status of a specific order by its ID.
     Use this tool when a user asks for the status of their order.
     """
-    # In a real application, this would query a database or an external API.
-    # For this lab, we will return mock data.
-    if order_id == "123":
-        return {"status": "Shipped", "tracking_number": "ABC123XYZ"}
-    elif order_id == "456":
-        return {"status": "Processing", "expected_delivery": "2025-08-10"}
+    # Simulate a database lookup
+    orders_db = {
+        "123": {
+            "status": "Shipped",
+            "tracking_number": "ABC123XYZ",
+            "estimated_delivery": "2025-08-08",
+        },
+        "456": {
+            "status": "Processing",
+            "expected_delivery": "2025-08-10",
+            "processing_stage": "Packaging",
+        },
+        "789": {
+            "status": "Delivered",
+            "delivered_date": "2025-08-05",
+            "tracking_number": "XYZ789ABC",
+        },
+    }
+
+    if order_id in orders_db:
+        return orders_db[order_id]
     else:
-        return {"status": "Not Found", "message": f"Order ID '{order_id}' not found."}
+        return {
+            "status": "Not Found",
+            "message": f"Order ID '{order_id}' not found in our system.",
+            "suggestion": "Please check the order ID and try again, or contact customer support.",
+        }

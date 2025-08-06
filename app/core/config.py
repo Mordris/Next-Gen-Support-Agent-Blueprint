@@ -3,11 +3,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # This tells Pydantic to load variables from a .env file
-    model_config = SettingsConfigDict(env_file="../.env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # Define your settings here
-    API_KEY: str = "default_secret_key"  # A default is good for local dev
+    # API key for our own service
+    API_KEY: str = "default_secret_key"
 
 
 # Instantiate the settings

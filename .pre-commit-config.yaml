@@ -1,21 +1,27 @@
-# .pre-commit-config.yaml
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: v5.0.0
     hooks:
       - id: check-yaml
       - id: end-of-file-fixer
       - id: trailing-whitespace
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.8
+    rev: v0.12.7
     hooks:
       - id: ruff
-        args: [--fix]
       - id: ruff-format
+
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
+    rev: v1.17.1
     hooks:
       - id: mypy
-        # We target the app directory where our main Python code will be
-        files: ^app/
-        additional_dependencies: ["pydantic", "fastapi"]
+        additional_dependencies:
+          - types-redis==4.6.0.20240417
+          - types-requests==2.32.4.20250611
+          - fastapi
+          - pydantic
+          - langchain
+          - langchain-community
+          - langchain-openai
+          - redis

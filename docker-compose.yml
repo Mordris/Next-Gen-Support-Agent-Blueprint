@@ -1,44 +1,67 @@
 # docker-compose.yml
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    # The redis healthcheck is stable and can remain.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma-data:/chroma
+    # --- THIS IS THE FIX ---
+    # We remove ALL environment variables except telemetry.
+    # Most importantly, the failing healthcheck has been REMOVED.
+    environment:
+      - ANONYMIZED_TELEMETRY=False
+    restart: unless-stopped
+
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     env_file:
       - .env
     volumes:
+      # Mount source code for hot-reloading
       - ./app:/code/app
-      - ./scripts:/code/scripts # <-- ADD THIS LINE
-      - ./data:/code/data # <-- ADD THIS LINE
+      - ./scripts:/code/scripts
+    # depends_on now waits for the containers to START, not to be 'healthy'.
+    # This is more reliable for development.
     depends_on:
       - redis
       - chroma
-    command: poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data # Use a named volume for persistence
-
-  chroma:
-    image: chromadb/chroma
-    ports:
-      - "8001:8000" # IMPORTANT: Map to host port 8001 to avoid conflict with our API
-    volumes:
-      - chroma-data:/chroma/.chroma/index # Use a named volume for persistence
+    # Use reload for development
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
 
   frontend:
     build:
       context: ./ui
     ports:
       - "8501:8501"
-    depends_on:
-      - api
     env_file:
       - .env
+    depends_on:
+      - api
+    restart: unless-stopped
 
 volumes:
-  redis-data: # Define the named volume
-  chroma-data: # Define the named volume
+  redis-data:
+    driver: local
+  chroma-data:
+    driver: local

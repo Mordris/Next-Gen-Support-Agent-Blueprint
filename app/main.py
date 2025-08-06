@@ -1,34 +1,55 @@
 # app/main.py
-import asyncio  # Add this import
-
 from fastapi import FastAPI, Depends
 from pydantic import BaseModel
-from fastapi.responses import StreamingResponse  # Add this import
+from fastapi.responses import StreamingResponse
 
+# LangChain imports
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+
+# Local imports
 from app.core.security import api_key_auth
+from app.core.retriever import get_retriever
 
 # Create the FastAPI app instance
 app = FastAPI(title="Next-Gen Support Agent API")
 
 
-# --- Define Request and Response Models ---
+# --- Pydantic Models ---
 class HealthResponse(BaseModel):
     status: bool
 
 
-# Add a model for our chat request body
 class ChatRequest(BaseModel):
     message: str
 
 
-# --- Helper Generator for Streaming ---
-async def echo_stream(message: str):
-    """
-    A simple async generator that echoes the message back, word by word.
-    """
-    for word in message.split():
-        yield word + " "
-        await asyncio.sleep(0.1)  # Simulate a delay
+# --- RAG Chain Setup ---
+# 1. Create the prompt template
+template = """
+Answer the question based only on the following context:
+{context}
+
+Question: {question}
+"""
+prompt = ChatPromptTemplate.from_template(template)
+
+# 2. Initialize the LLM
+# LangSmith will automatically track this
+llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+
+# 3. Get our advanced retriever
+retriever = get_retriever()
+
+# 4. Define the RAG chain using LangChain Expression Language (LCEL)
+rag_chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | prompt
+    | llm
+    | StrOutputParser()
+)
 
 
 # --- API Endpoints ---
@@ -38,19 +59,14 @@ async def health_check():
     return {"status": True}
 
 
-@app.get("/secure", tags=["Testing"])
-async def secure_endpoint(api_key: str = Depends(api_key_auth)):
-    """A secure endpoint that requires a valid API key."""
-    return {"message": "This is a secure endpoint."}
-
-
-# Add the new streaming endpoint
 @app.post("/chat/stream", tags=["Chat"])
 async def chat_stream_endpoint(
-    request: ChatRequest,
-    api_key: str = Depends(api_key_auth),  # This endpoint is protected
+    request: ChatRequest, api_key: str = Depends(api_key_auth)
 ):
     """
-    Receives a message and streams an echo response back.
+    Receives a message and streams the RAG chain's response back.
     """
-    return StreamingResponse(echo_stream(request.message), media_type="text/plain")
+    return StreamingResponse(
+        rag_chain.stream(request.message),  # The chain is now the source of the stream
+        media_type="text/plain",
+    )

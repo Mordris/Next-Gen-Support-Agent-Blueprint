@@ -1,7 +1,7 @@
 [project]
 name = "app"
-version = "0.1.0"
-description = "The backend API for the Next-Gen Support Agent"
+version = "2.0.0"
+description = "Self-Correcting Support Agent with LangGraph"
 authors = [
     {name = "Yunus Emre Gültepe", email = "yemregultepe@gmail.com"}
 ]
@@ -9,11 +9,12 @@ license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "pydantic-settings",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic-settings>=2.0.0",
     "langchain>=0.3.27,<0.4.0",
     "langchain-community>=0.3.27,<0.4.0",
+    "langgraph>=0.2.34,<0.3.0",
     "pypdf>=5.9.0,<6.0.0",
     "sentence-transformers>=5.0.0,<6.0.0",
     "chromadb-client>=1.0.15,<2.0.0",
@@ -22,16 +23,35 @@ dependencies = [
     "langchain-chroma>=0.2.5,<0.3.0",
     "langchain-openai>=0.3.28,<0.4.0",
     "langsmith>=0.4.12,<0.5.0",
-    "langchain-redis>=0.2.3,<0.3.0",
+    "redis>=5.0.0,<6.0.0",
     "pytz>=2024.1",
 ]
 
 [tool.poetry]
 name = "app"
-version = "0.1.0"
-description = ""
+version = "2.0.0"
+description = "Self-Correcting Support Agent with LangGraph"
 authors = ["Yunus Emre Gültepe <yemregultepe@gmail.com>"]
 packages = [{include = "app", from = ".."}]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.14"
+fastapi = "^0.110.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+pydantic-settings = "^2.0.0"
+langchain = "^0.3.27"
+langchain-community = "^0.3.27"
+langgraph = "^0.2.34"
+pypdf = "^5.9.0"
+sentence-transformers = "^5.0.0"
+chromadb-client = "^1.0.15"
+langchain-huggingface = "^0.3.1"
+flashrank = "^0.2.10"
+langchain-chroma = "^0.2.5"
+langchain-openai = "^0.3.28"
+langsmith = "^0.4.12"
+pytz = "^2024.1"
+redis = "^5.0.0"
 
 [tool.poetry.group.dev.dependencies]
 types-redis = "^4.6.0.20240417"

@@ -1,9 +1,10 @@
+# app/main.py
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict, Any, Literal, Optional, List
+from typing import AsyncGenerator, Dict, Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from fastapi import FastAPI, Depends, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,16 +15,10 @@ from redis.exceptions import RedisError
 from langchain_community.chat_message_histories import RedisChatMessageHistory
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_openai import ChatOpenAI
-from langchain.agents import create_openai_tools_agent, AgentExecutor
-from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables.config import RunnableConfig
-from langchain_core.messages import AIMessageChunk
 
 from app.core.security import api_key_auth
-from app.core.tools import retrieve_context, get_order_status, get_current_time
 from app.core.retriever import prewarm_retriever
+from app.core.agent import SelfCorrectingAgent
 
 
 # --- Configuration & State ---
@@ -33,12 +28,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 redis_client: Optional[Redis] = None
 in_memory_histories: Dict[str, InMemoryChatMessageHistory] = {}
+agent: Optional[SelfCorrectingAgent] = None
 
 
 # --- Lifespan Management ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client
+    global redis_client, agent
     logger.info("Starting up application...")
 
     try:
@@ -49,6 +45,12 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Redis connection failed: {e}. Using in-memory history.")
         redis_client = None
 
+    # Initialize the new self-correcting agent
+    logger.info("Initializing self-correcting agent...")
+    powerful_llm = ChatOpenAI(model="gpt-4o", temperature=0, streaming=True)
+    agent = SelfCorrectingAgent(powerful_llm)
+    logger.info("Agent initialized successfully.")
+
     prewarm_retriever()
     yield
 
@@ -58,10 +60,10 @@ async def lifespan(app: FastAPI):
 
 
 # --- FastAPI App Initialization ---
-app = FastAPI(title="Next-Gen Support Agent API", version="1.5.0", lifespan=lifespan)
+app = FastAPI(title="Next-Gen Support Agent API", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Changed from "" to allow all origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,70 +81,6 @@ class ChatRequest(BaseModel):
     session_id: str
 
 
-class RouteQuery(BaseModel):
-    datasource: Literal["agent", "conversation"] = Field(
-        ..., description="Route a user query to the most relevant datasource."
-    )
-
-
-# --- LLM and Agent Configuration ---
-powerful_llm = ChatOpenAI(model="gpt-4o", temperature=0, streaming=True)
-fast_llm = ChatOpenAI(model="gpt-3.5-turbo-0125", temperature=0, streaming=True)
-
-agent_system_prompt = """
-You are an expert customer support agent for eBay.
-Your primary goal is to provide accurate and helpful information based exclusively on the context retrieved from the available tools.
-
-Core Directives:
-- Prioritize Tools: For any user question about eBay policies (refunds, returns, privacy, user agreement), order statuses, or the current time, you MUST use the provided tools.
-- Ground Your Answers: Base your answers directly on the output of the tools. If the retrieved context does not contain the answer, clearly state you do not have that information.
-- Be Conversational but accurate.
-
-Tool Usage:
-- retrieve_context → policy-related questions
-- get_order_status → order-related questions
-- get_current_time → time/date questions
-"""
-
-tools = [retrieve_context, get_order_status, get_current_time]
-
-agent_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", agent_system_prompt),
-        MessagesPlaceholder(variable_name="chat_history", optional=True),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ]
-)
-agent = create_openai_tools_agent(powerful_llm, tools, agent_prompt)
-agent_executor = AgentExecutor(
-    agent=agent, tools=tools, verbose=False, handle_parsing_errors=True
-)
-
-# Simple Conversational Chain
-conversational_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", "You are a helpful and friendly assistant."),
-        MessagesPlaceholder(variable_name="chat_history", optional=True),
-        ("human", "{input}"),
-    ]
-)
-conversational_chain = conversational_prompt | fast_llm | StrOutputParser()
-
-# Router Chain
-router_prompt_template = (
-    "You are an expert at routing a user query to the appropriate data source.\n"
-    "Classify as 'agent' for questions about eBay's policies, order statuses, or the current time/date.\n"
-    "Otherwise, classify as 'conversation'."
-)
-router_prompt = ChatPromptTemplate.from_messages(
-    [("system", router_prompt_template), ("human", "{input}")]
-)
-router_chain = router_prompt | fast_llm.with_structured_output(
-    RouteQuery, method="function_calling"
-)
-
-
 # --- Memory Configuration ---
 def get_session_history(session_id: str):
     if redis_client:
@@ -152,45 +90,84 @@ def get_session_history(session_id: str):
     return in_memory_histories[session_id]
 
 
-agent_with_chat_history = RunnableWithMessageHistory(
-    agent_executor,
-    get_session_history,
-    input_messages_key="input",
-    history_messages_key="chat_history",
-)
-conversational_chain_with_history = RunnableWithMessageHistory(
-    conversational_chain,
-    get_session_history,
-    input_messages_key="input",
-    history_messages_key="chat_history",
-)
-
-
-# --- Robust Event Processing ---
-def process_event(event: Any) -> List[Dict]:
-    """Processes a LangChain event stream to find relevant UI events."""
+# --- Event Processing ---
+def process_langgraph_event(event: Dict[str, Any]) -> list[Dict]:
+    """
+    Processes LangGraph events to extract UI-relevant information.
+    """
     ui_events = []
-    event_name = event.get("event")
 
-    if event_name == "on_tool_start":
-        if name := event.get("name"):
-            ui_events.append({"event": "tool_start", "name": name})
-
-    elif event_name == "on_tool_end":
-        if name := event.get("name"):
-            output = event.get("data", {}).get("output")
+    # LangGraph events have a different structure than LangChain
+    for node_name, node_data in event.items():
+        if node_name == "reasoning":
             ui_events.append(
                 {
-                    "event": "tool_end",
-                    "name": name,
-                    "output": str(output) if output is not None else "",
+                    "event": "reasoning_start",
+                    "step": "reasoning",
+                    "iteration": node_data.get("iteration_count", 0),
                 }
             )
 
-    elif event_name == "on_chat_model_stream":
-        chunk = event.get("data", {}).get("chunk")
-        if isinstance(chunk, AIMessageChunk) and chunk.content:
-            ui_events.append({"event": "final_token", "data": chunk.content})
+            # Check if the reasoning node produced tool calls
+            messages = node_data.get("messages", [])
+            for message in messages:
+                if hasattr(message, "tool_calls") and message.tool_calls:
+                    for tool_call in message.tool_calls:
+                        ui_events.append(
+                            {"event": "tool_start", "name": tool_call["name"]}
+                        )
+
+        elif node_name == "tools":
+            # Tool execution completed
+            messages = node_data.get("messages", [])
+            for message in messages:
+                if hasattr(message, "name"):  # ToolMessage
+                    ui_events.append(
+                        {
+                            "event": "tool_end",
+                            "name": message.name,
+                            "output": str(message.content) if message.content else "",
+                        }
+                    )
+
+        elif node_name == "response_generation":
+            ui_events.append({"event": "response_start", "step": "generating_response"})
+
+            # Extract the response content
+            messages = node_data.get("messages", [])
+            for message in messages:
+                if hasattr(message, "content") and message.content:
+                    ui_events.append(
+                        {"event": "final_response", "content": message.content}
+                    )
+
+        elif node_name == "self_assessment":
+            confidence = node_data.get("confidence_score", 0.0)
+            needs_correction = node_data.get("needs_correction", False)
+            ui_events.append(
+                {
+                    "event": "self_assessment",
+                    "confidence": confidence,
+                    "needs_correction": needs_correction,
+                    "reason": node_data.get("correction_reason"),
+                }
+            )
+
+        elif node_name == "correction":
+            ui_events.append(
+                {
+                    "event": "correction_start",
+                    "reason": node_data.get("correction_reason"),
+                }
+            )
+
+        elif node_name == "error_handling":
+            ui_events.append(
+                {
+                    "event": "error",
+                    "data": "The agent encountered an error and is attempting recovery.",
+                }
+            )
 
     return ui_events
 
@@ -199,42 +176,36 @@ def process_event(event: Any) -> List[Dict]:
 async def event_streamer(
     request: Request, message: str, session_id: str
 ) -> AsyncGenerator[str, None]:
-    config: RunnableConfig = {"configurable": {"session_id": session_id}}
+    """
+    Streams events from the LangGraph agent.
+    """
+    if not agent:
+        yield f"data: {json.dumps({'event': 'error', 'data': 'Agent not initialized'})}\n\n"
+        return
 
-    logger.info(f"Routing query: '{message[:50]}...'")
-    route_result = await router_chain.ainvoke({"input": message})
+    logger.info(
+        f"Processing message: '{message[:50]}...' for session: {session_id[:8]}..."
+    )
 
-    if not isinstance(route_result, RouteQuery):
-        logger.error(f"Router returned unexpected type: {type(route_result)}")
-        route_decision = "conversation"
-    else:
-        route_decision = route_result.datasource
+    try:
+        # Stream from the LangGraph agent
+        async for event in agent.astream_response(message, session_id):
+            if await request.is_disconnected():
+                break
 
-    logger.info(f"Router decided: '{route_decision}'")
+            # Check for errors
+            if "error" in event:
+                yield f"data: {json.dumps({'event': 'error', 'data': event['error']})}\n\n"
+                continue
 
-    if route_decision == "agent":
-        stream_generator = agent_with_chat_history.astream_events(
-            {"input": message}, config=config, version="v2"
-        )
-    else:
+            # Process the event and convert to UI format
+            ui_events = process_langgraph_event(event)
+            for ui_event in ui_events:
+                yield f"data: {json.dumps(ui_event)}\n\n"
 
-        async def conversation_event_generator():
-            async for chunk in conversational_chain_with_history.astream(
-                {"input": message}, config=config
-            ):
-                yield {
-                    "event": "on_chat_model_stream",
-                    "data": {"chunk": AIMessageChunk(content=chunk)},
-                }
-
-        stream_generator = conversation_event_generator()
-
-    async for event in stream_generator:
-        if await request.is_disconnected():
-            break
-        ui_events = process_event(event)
-        for ui_event in ui_events:
-            yield f"data: {json.dumps(ui_event)}\n\n"
+    except Exception as e:
+        logger.error(f"Error in event streaming: {e}")
+        yield f"data: {json.dumps({'event': 'error', 'data': str(e)})}\n\n"
 
     yield f"data: {json.dumps({'event': 'stream_end'})}\n\n"
 
@@ -242,7 +213,10 @@ async def event_streamer(
 # --- API Endpoints ---
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    return HealthResponse(status=True, redis_connected=redis_client is not None)
+    return HealthResponse(
+        status=True,
+        redis_connected=redis_client is not None,
+    )
 
 
 @app.post("/chat/stream")
@@ -253,3 +227,19 @@ async def chat_stream_endpoint(
         event_streamer(request, chat_request.message, chat_request.session_id),
         media_type="text/event-stream",
     )
+
+
+# --- Debug Endpoint for Development ---
+@app.get("/agent/status")
+async def agent_status(_=Depends(api_key_auth)):
+    """Debug endpoint to check agent status."""
+    if not agent:
+        return {"status": "not_initialized"}
+
+    return {
+        "status": "initialized",
+        "tools_count": len(agent.tools),
+        "graph_nodes": list(agent.graph.nodes.keys())
+        if hasattr(agent.graph, "nodes")
+        else [],
+    }

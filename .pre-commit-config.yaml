@@ -19,6 +19,7 @@ repos:
         additional_dependencies:
           - types-redis==4.6.0.20240417
           - types-requests==2.32.4.20250611
+          - types-pytz==2024.1.0.20240417
           - fastapi
           - pydantic
           - langchain

@@ -1,3 +1,4 @@
+# scripts/ingest.py
 import logging
 import chromadb
 import glob
